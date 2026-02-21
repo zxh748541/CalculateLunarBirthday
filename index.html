@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>公历/农历生日接近计算器</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#111111">
+
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+           margin: 0; padding: 16px; line-height: 1.45; }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 10px; }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 14px; padding: 14px; margin: 12px 0; }
+    .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+    label { font-size: 13px; opacity: .9; display:block; margin-bottom:6px; }
+    input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); cursor: pointer; }
+    button.primary { border: none; background: #2d6cdf; color: #fff; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .actions { display:flex; gap:10px; flex-wrap: wrap; margin-top: 10px; }
+    .hint { font-size: 12px; opacity: .8; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid rgba(127,127,127,.25); text-align: left; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); font-size: 12px; }
+    .ok { font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+
+  <!-- lunar-javascript (Solar/Lunar API) -->
+  <script src="https://cdn.jsdelivr.net/npm/lunar-javascript@1.7.7/lunar.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <h1>公历 / 农历生日接近计算器</h1>
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="solarDate">你的公历生日（阳历）</label>
+        <input id="solarDate" type="date" />
+      </div>
+      <div>
+        <label for="startYear">查询起始年</label>
+        <input id="startYear" type="number" min="1900" max="2100" value="1990" />
+      </div>
+      <div>
+        <label for="endYear">查询结束年</label>
+        <input id="endYear" type="number" min="1900" max="2100" value="2035" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div>
+        <label for="threshold">只显示“相差≤N天”的年份（可选）</label>
+        <input id="threshold" type="number" min="0" max="30" value="3" />
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button class="primary" id="btnRun">计算</button>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="btnShare">分享链接</button>
+      </div>
+    </div>
+    <div class="hint">
+      说明：本工具会先把你输入的公历生日转换成“农历月/日”（若是闰月，会按闰月处理；若某一年没有该闰月，会自动回退到同月的非闰月）。<br>
+      如果你的公历生日是 2/29，在非闰年会用 2/28 作为当年“公历生日”计算。
+    </div>
+  </div>
+
+  <div class="card" id="summary" style="display:none;"></div>
+
+  <div class="card" id="resultCard" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div id="resultTitle" class="mono"></div>
+      <div id="lunarInfo" class="pill"></div>
+    </div>
+    <div style="margin-top:10px; overflow:auto;">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>年份</th>
+            <th>当年公历生日</th>
+            <th>当年农历生日对应公历</th>
+            <th>相差（天）</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="hint">
+    Tip：把这个文件夹丢到 GitHub Pages / Vercel / Netlify 上，就能得到一个可分享的 HTTPS 链接；在手机上打开后还能“添加到主屏幕”（PWA）。
+  </div>
+</div>
+
+<script>
+(function() {
+  const $ = (id) => document.getElementById(id);
+
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  function fmtYMD(y,m,d){ return `${y}-${pad2(m)}-${pad2(d)}`; }
+  function parseYMD(s){
+    // s: "YYYY-MM-DD"
+    const [y,m,d] = s.split('-').map(x=>parseInt(x,10));
+    return {y,m,d};
+  }
+  function isValidYMD(y,m,d){
+    const dt = new Date(Date.UTC(y, m-1, d));
+    return dt.getUTCFullYear()===y && (dt.getUTCMonth()+1)===m && dt.getUTCDate()===d;
+  }
+  function dayNumUTC(y,m,d){
+    return Math.floor(Date.UTC(y, m-1, d) / 86400000);
+  }
+  function diffDaysUTC(y1,m1,d1, y2,m2,d2){
+    return dayNumUTC(y2,m2,d2) - dayNumUTC(y1,m1,d1);
+  }
+  function setQueryFromUI(){
+    const s = $('solarDate').value;
+    const a = $('startYear').value;
+    const b = $('endYear').value;
+    const t = $('threshold').value;
+    const u = new URL(location.href);
+    u.searchParams.set('d', s);
+    u.searchParams.set('a', a);
+    u.searchParams.set('b', b);
+    u.searchParams.set('t', t);
+    history.replaceState(null, '', u.toString());
+    return u.toString();
+  }
+  function loadQueryToUI(){
+    const u = new URL(location.href);
+    const d = u.searchParams.get('d');
+    const a = u.searchParams.get('a');
+    const b = u.searchParams.get('b');
+    const t = u.searchParams.get('t');
+    if (d) $('solarDate').value = d;
+    if (a) $('startYear').value = a;
+    if (b) $('endYear').value = b;
+    if (t) $('threshold').value = t;
+  }
+
+  function compute() {
+    const solarStr = $('solarDate').value;
+    if (!solarStr) { alert('请先选择公历生日'); return; }
+    const {y:by, m:bm, d:bd} = parseYMD(solarStr);
+
+    let startY = parseInt($('startYear').value, 10);
+    let endY = parseInt($('endYear').value, 10);
+    if (isNaN(startY) || isNaN(endY) || startY > endY) { alert('年份范围不合法'); return; }
+    startY = Math.max(1900, Math.min(2100, startY));
+    endY = Math.max(1900, Math.min(2100, endY));
+
+    const thr = parseInt($('threshold').value, 10);
+    const threshold = isNaN(thr) ? null : Math.max(0, Math.min(30, thr));
+
+    // 1) 从公历生日推农历月/日（含闰月信息：month<0）
+    const lunar0 = Solar.fromYmd(by, bm, bd).getLunar();
+    const lunarMonth = lunar0.getMonth(); // leap month uses negative
+    const lunarDay = lunar0.getDay();
+    const isLeap = lunarMonth < 0;
+    const lunarMonthAbs = Math.abs(lunarMonth);
+
+    // title
+    $('resultTitle').textContent = `输入公历生日：${solarStr}（范围：${startY}–${endY}）`;
+    $('lunarInfo').textContent = `对应农历：${isLeap ? '闰' : ''}${lunarMonthAbs}月${lunar0.getDayInChinese()}`;
+
+    // 2) 对每一年求“当年农历生日对应的公历日期”
+    const rows = [];
+    for (let y = startY; y <= endY; y++) {
+      // solar birthday in year y
+      let sY = y, sM = bm, sD = bd;
+      if (!isValidYMD(sY, sM, sD)) {
+        // e.g. 2/29 in non-leap years -> use 2/28
+        if (sM === 2 && sD === 29) { sD = 28; }
+      }
+
+      // lunar birthday: try lunar year candidates to land inside Gregorian year y
+      const monthParamPrimary = isLeap ? -lunarMonthAbs : lunarMonthAbs;
+      const monthParamFallback = lunarMonthAbs; // non-leap fallback
+
+      function tryOne(lYear, monthParam){
+        try {
+          const sol = Lunar.fromYmd(lYear, monthParam, lunarDay).getSolar();
+          return {sol, ok:true};
+        } catch (e) {
+          return {sol:null, ok:false};
+        }
+      }
+
+      // attempt in order: [y, y-1] (primary month), then fallback month
+      let got = null;
+      const candidates = [y, y-1, y+1];
+      for (const ly of candidates) {
+        const r = tryOne(ly, monthParamPrimary);
+        if (r.ok) {
+          const sy = r.sol.getYear();
+          if (sy === y) { got = r.sol; break; }
+          // keep as backup if close
+          if (!got) got = r.sol;
+        }
+      }
+      if (!got && isLeap) {
+        for (const ly of candidates) {
+          const r = tryOne(ly, monthParamFallback);
+          if (r.ok) {
+            const sy = r.sol.getYear();
+            if (sy === y) { got = r.sol; break; }
+            if (!got) got = r.sol;
+          }
+        }
+      }
+      if (!got) continue;
+
+      const lySolY = got.getYear(), lySolM = got.getMonth(), lySolD = got.getDay();
+      const delta = diffDaysUTC(sY, sM, sD, lySolY, lySolM, lySolD); // lunar - solar
+      const absDelta = Math.abs(delta);
+
+      if (threshold !== null && absDelta > threshold) continue;
+
+      rows.push({
+        year: y,
+        solar: fmtYMD(sY, sM, sD),
+        lunarSolar: fmtYMD(lySolY, lySolM, lySolD),
+        delta: delta
+      });
+    }
+
+    // render
+    const tbody = $('tbl').querySelector('tbody');
+    tbody.innerHTML = '';
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${r.year}</td>
+        <td class="mono">${r.solar}</td>
+        <td class="mono">${r.lunarSolar}</td>
+        <td class="mono ${Math.abs(r.delta)<=1 ? 'ok' : ''}">${r.delta>0 ? '+' : ''}${r.delta}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    $('resultCard').style.display = 'block';
+
+    // summary
+    const totalYears = endY - startY + 1;
+    $('summary').style.display = 'block';
+    $('summary').innerHTML = `
+      <div><span class="pill">已筛选</span> <b>${rows.length}</b> / ${totalYears} 年（阈值：${threshold===null?'无':('≤'+threshold+'天')}）</div>
+      <div class="hint">“相差（天）” = 当年农历生日对应公历日期 − 当年公历生日。正数表示农历生日更晚。</div>
+    `;
+
+    setQueryFromUI();
+  }
+
+  async function shareLink(){
+    const url = setQueryFromUI();
+    const title = '公历/农历生日接近计算器';
+    const text = '点开链接输入/查看结果：';
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, text, url });
+        return;
+      } catch (e) {
+        // user cancelled or not supported
+      }
+    }
+    // fallback: copy
+    try {
+      await navigator.clipboard.writeText(url);
+      alert('已复制链接，可以直接发到微信/QQ/短信：\n' + url);
+    } catch (e) {
+      prompt('复制这个链接分享：', url);
+    }
+  }
+
+  $('btnRun').addEventListener('click', compute);
+  $('btnShare').addEventListener('click', shareLink);
+
+  loadQueryToUI();
+
+  // Register service worker for PWA
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  }
+})();
+</script>
+</body>
+</html>
